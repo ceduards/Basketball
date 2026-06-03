@@ -23,6 +23,7 @@ const TIPOS_POR_CATEGORIA = {
   violacion: [
     "Violación de Pasos","Doble Drible","Violación de 3 Segundos",
     "Violación de 5 Segundos","Violación de 8 Segundos","Violación de 24 Segundos",
+    "Bola Devuelta","Interferencia Ofensiva","Interferencia Defensiva","Invasión en TL",
   ],
   salida: ["Fuera de Banda"],
 };
@@ -63,17 +64,7 @@ const FISICO_OPT = ["Excelente","Bueno","Regular","Deficiente"];
 const POS_ARB    = ["Líder","Center","Seguidor"];
 const ZONAS      = ["Zona Primaria","Zona Secundaria","Zona Terciaria"];
 
-const DIMENSIONES = [
-  { value:"arbitro",    label:"Árbitro"           },
-  { value:"categoria",  label:"Categoría"          },
-  { value:"equipo",     label:"Equipo"             },
-  { value:"veredicto",  label:"Veredicto"          },
-  { value:"aceptacion", label:"Aceptación"         },
-  { value:"pitazo",     label:"Tipo de Pitazo"     },
-  { value:"irs",        label:"Revisión IRS"       },
-  { value:"posArbitro", label:"Posición del Árbitro"},
-  { value:"periodo",    label:"Período"            },
-];
+
 
 const makeId = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const pct    = (n,t) => t===0 ? "0%" : Math.round((n/t)*100)+"%";
@@ -284,42 +275,84 @@ function BarChart({ data }) {
 const PALETTE = ["#e91e63","#29b6f6","#00e676","#ffd740","#ff9100","#aa00ff","#00bcd4","#ff5252","#69f0ae","#f06292"];
 
 /* ══════════════════════════════════════════════════════════
-   PESTAÑA GRÁFICOS DINÁMICA
+   PESTAÑA GRÁFICOS — FILTROS COMBINABLES
 ═══════════════════════════════════════════════════════════ */
 function VistaGraficos({ llamados, config }) {
-  const [tipoGrafico, setTipoGrafico] = useState("torta");
-  const [dimension,   setDimension]   = useState("arbitro");
+  const [tipoGrafico,   setTipoGrafico]   = useState("barras");
+  const [filtroCat,     setFiltroCat]     = useState("todas");   // todas | falta | violacion | salida
+  const [filtroArbitros,setFiltroArbitros]= useState([]);        // [] = todos
+  const [eje,           setEje]           = useState("equipo");  // dimensión del eje X
+
+  const EJES = [
+    { value:"equipo",     label:"Equipo sancionado"  },
+    { value:"posArbitro", label:"Posición del árbitro"},
+    { value:"veredicto",  label:"Veredicto"           },
+    { value:"aceptacion", label:"Aceptación"          },
+    { value:"pitazo",     label:"Tipo de pitazo"      },
+    { value:"periodo",    label:"Período"             },
+    { value:"irs",        label:"Revisión IRS"        },
+    { value:"arbitro",    label:"Árbitro"             },
+  ];
 
   const arbNombre = id => config.arbitros.find(a=>a.id===id)?.nombre || id;
-  const catLabel  = c => CATEGORIAS[c]?.label || c;
-  const vdLabel   = v => ALL_VEREDICTOS.find(x=>x.value===v)?.label || v;
-  const vdColor   = v => ALL_VEREDICTOS.find(x=>x.value===v)?.color || "#90caf9";
+  const vdLabel   = v  => ALL_VEREDICTOS.find(x=>x.value===v)?.label || v;
+  const vdColor   = v  => ALL_VEREDICTOS.find(x=>x.value===v)?.color || "#90caf9";
 
+  const toggleArbitro = id => setFiltroArbitros(prev =>
+    prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]
+  );
+
+  /* Aplicar filtros */
+  const llamadosFiltrados = useMemo(() => {
+    let data = llamados;
+    if (filtroCat !== "todas")
+      data = data.filter(l => (l.categoria || categoriaDe(l.tipo)) === filtroCat);
+    if (filtroArbitros.length > 0)
+      data = data.filter(l => filtroArbitros.includes(l.arbitro));
+    return data;
+  }, [llamados, filtroCat, filtroArbitros]);
+
+  /* Construir datos del gráfico según eje */
   const chartData = useMemo(() => {
     const counts = {};
-    llamados.forEach(l => {
+    llamadosFiltrados.forEach(l => {
       let key = "";
-      switch(dimension) {
-        case "arbitro":    key = arbNombre(l.arbitro); break;
-        case "categoria":  key = catLabel(l.categoria || categoriaDe(l.tipo)); break;
+      switch(eje) {
         case "equipo":     key = l.equipo; break;
+        case "posArbitro": key = l.posArbitro; break;
         case "veredicto":  key = vdLabel(l.veredicto); break;
         case "aceptacion": key = l.aceptacion; break;
         case "pitazo":     key = l.pitazo==="simple"?"Simple":l.pitazo==="doble"?"Doble":"Triple"; break;
-        case "irs":        key = l.irs?(l.irsResultado==="sostenida"?"IRS Sostenida":"IRS Cambiada"):"Sin IRS"; break;
-        case "posArbitro": key = l.posArbitro; break;
         case "periodo":    key = l.periodo; break;
+        case "irs":        key = l.irs?(l.irsResultado==="sostenida"?"IRS Sostenida":"IRS Cambiada"):"Sin IRS"; break;
+        case "arbitro":    key = arbNombre(l.arbitro); break;
         default: key = "Otro";
       }
       counts[key] = (counts[key]||0)+1;
     });
-    return Object.entries(counts).map(([label,value],i)=>({
+    return Object.entries(counts).map(([label,value],i) => ({
       label, value,
-      color: dimension==="veredicto" ? (vdColor(llamados.find(l=>vdLabel(l.veredicto)===label)?.veredicto)||PALETTE[i%PALETTE.length])
-           : dimension==="categoria" ? (CATEGORIAS[Object.keys(CATEGORIAS).find(k=>catLabel(k)===label)]?.color||PALETTE[i%PALETTE.length])
-           : PALETTE[i%PALETTE.length],
+      color: eje==="veredicto"
+        ? (vdColor(llamadosFiltrados.find(l=>vdLabel(l.veredicto)===label)?.veredicto) || PALETTE[i%PALETTE.length])
+        : eje==="equipo"
+          ? (label===config.equipo1?"#29b6f6":label===config.equipo2?"#f06292":PALETTE[i%PALETTE.length])
+          : eje==="posArbitro"
+            ? (label==="Líder"?"#00e676":label==="Center"?"#ffd740":"#ff9100")
+            : eje==="irs"
+              ? (label==="Sin IRS"?"#546e7a":label==="IRS Sostenida"?"#00e676":"#ff5252")
+              : eje==="aceptacion"
+                ? (label==="Aceptado"?"#00e676":"#ff1744")
+                : PALETTE[i%PALETTE.length],
     }));
-  }, [llamados, dimension, config]);
+  }, [llamadosFiltrados, eje, config]);
+
+  /* Descripción del filtro activo */
+  const descFiltro = () => {
+    const cat = filtroCat==="todas" ? "Todos los llamados" : CATEGORIAS[filtroCat]?.label+"s";
+    const arb = filtroArbitros.length===0 ? "toda la terna"
+      : filtroArbitros.map(id=>arbNombre(id)).join(", ");
+    return `${cat} · ${arb}`;
+  };
 
   if (llamados.length === 0) return (
     <div className="card" style={{padding:40,textAlign:"center",color:"#546e7a",fontFamily:"Barlow,sans-serif"}}>
@@ -329,28 +362,74 @@ function VistaGraficos({ llamados, config }) {
 
   return (
     <div>
-      <div className="sec">📈 Gráficos Dinámicos</div>
+      <div className="sec">📈 Gráficos con Filtros Combinables</div>
 
-      {/* Controles */}
-      <div className="card" style={{padding:20,marginBottom:20}}>
-        <div style={{display:"flex",gap:24,flexWrap:"wrap",alignItems:"flex-start"}}>
+      {/* Panel de filtros */}
+      <div className="card" style={{padding:22,marginBottom:16}}>
+        <div style={{display:"grid",gap:18}}>
+
+          {/* Tipo de gráfico */}
           <div>
             <div className="lbl" style={{marginBottom:8}}>TIPO DE GRÁFICO</div>
             <div style={{display:"flex",gap:8}}>
-              {[["torta","🥧 Torta"],["barras","📊 Barras"]].map(([v,lbl])=>(
+              {[["barras","📊 Barras"],["torta","🥧 Torta"]].map(([v,lbl])=>(
                 <button key={v} onClick={()=>setTipoGrafico(v)}
                   className={`tgl ${tipoGrafico===v?"tgl-blue":""}`}>{lbl}</button>
               ))}
             </div>
           </div>
-          <div style={{flex:1,minWidth:200}}>
-            <div className="lbl" style={{marginBottom:8}}>DIMENSIÓN A VISUALIZAR</div>
+
+          {/* Filtro categoría */}
+          <div>
+            <div className="lbl" style={{marginBottom:8}}>FILTRAR POR CATEGORÍA</div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              {DIMENSIONES.map(d=>(
-                <button key={d.value} onClick={()=>setDimension(d.value)}
-                  className={`tgl ${dimension===d.value?"tgl-pink":""}`}
-                  style={{fontSize:12,padding:"6px 12px"}}>
-                  {d.label}
+              <button onClick={()=>setFiltroCat("todas")}
+                className={`tgl ${filtroCat==="todas"?"tgl-blue":""}`}>
+                🏀 Todas
+              </button>
+              {Object.entries(CATEGORIAS).map(([key,cat])=>(
+                <button key={key} onClick={()=>setFiltroCat(key)} style={{
+                  cursor:"pointer",borderRadius:8,padding:"8px 16px",
+                  fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:13,
+                  border:`2px solid ${filtroCat===key?cat.color:"transparent"}`,
+                  background:filtroCat===key?`${cat.color}1a`:"#1d2840",
+                  color:filtroCat===key?cat.color:"#546e7a",transition:"all .15s",
+                }}>{cat.icon} {cat.label}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Filtro árbitros */}
+          <div>
+            <div className="lbl" style={{marginBottom:8}}>
+              FILTRAR POR ÁRBITRO
+              <span style={{color:"#546e7a",fontWeight:400,marginLeft:8}}>(vacío = toda la terna)</span>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {config.arbitros.map(a=>(
+                <button key={a.id} onClick={()=>toggleArbitro(a.id)}
+                  className={`tgl ${filtroArbitros.includes(a.id)?"tgl-pink":""}`}>
+                  🧑‍⚖️ {a.nombre} <span style={{fontSize:11,opacity:.7}}>({a.rol})</span>
+                </button>
+              ))}
+              {filtroArbitros.length>0&&(
+                <button onClick={()=>setFiltroArbitros([])}
+                  className="tgl" style={{color:"#ff5252",borderColor:"#ff5252"}}>
+                  ✕ Limpiar
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Eje del gráfico */}
+          <div>
+            <div className="lbl" style={{marginBottom:8}}>VER DISTRIBUCIÓN POR</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {EJES.map(e=>(
+                <button key={e.value} onClick={()=>setEje(e.value)}
+                  className={`tgl ${eje===e.value?"tgl-orange":""}`}
+                  style={{fontSize:12,padding:"6px 14px"}}>
+                  {e.label}
                 </button>
               ))}
             </div>
@@ -359,29 +438,40 @@ function VistaGraficos({ llamados, config }) {
       </div>
 
       {/* Gráfico */}
-      <div className="card" style={{padding:24}}>
-        <div style={{fontSize:16,fontWeight:800,color:"#e91e63",letterSpacing:1,marginBottom:4,fontFamily:"'Barlow Condensed',sans-serif"}}>
-          {tipoGrafico==="torta"?"🥧":"📊"} Distribución por {DIMENSIONES.find(d=>d.value===dimension)?.label}
+      <div className="card" style={{padding:24,marginBottom:16}}>
+        <div style={{marginBottom:4}}>
+          <div style={{fontSize:16,fontWeight:800,color:"#e91e63",letterSpacing:1,fontFamily:"'Barlow Condensed',sans-serif"}}>
+            {tipoGrafico==="torta"?"🥧":"📊"} {EJES.find(e=>e.value===eje)?.label}
+          </div>
+          <div style={{fontSize:12,color:"#546e7a",fontFamily:"Barlow,sans-serif",marginTop:4}}>
+            {descFiltro()} &nbsp;·&nbsp;
+            <span style={{color:"#90caf9",fontWeight:700}}>{llamadosFiltrados.length}</span> llamados
+          </div>
         </div>
-        <div style={{fontSize:12,color:"#546e7a",fontFamily:"Barlow,sans-serif",marginBottom:20}}>
-          Total de llamados: <span style={{color:"#90caf9",fontWeight:700}}>{llamados.length}</span>
+        <div style={{marginTop:20}}>
+          {llamadosFiltrados.length===0
+            ? <div style={{textAlign:"center",color:"#546e7a",fontFamily:"Barlow,sans-serif",padding:30}}>
+                Sin datos para los filtros seleccionados.
+              </div>
+            : tipoGrafico==="torta"
+              ? <PieChart data={chartData}/>
+              : <BarChart data={chartData}/>
+          }
         </div>
-        {tipoGrafico==="torta"
-          ? <PieChart data={chartData}/>
-          : <BarChart data={chartData}/>
-        }
       </div>
 
-      {/* Mini-resumen debajo */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10,marginTop:16}}>
-        {chartData.map((d,i)=>(
-          <div key={i} style={{background:"#0f1623",border:`1px solid ${d.color}33`,borderRadius:10,padding:"12px 14px",textAlign:"center"}}>
-            <div style={{fontSize:11,color:d.color,fontWeight:700,fontFamily:"Barlow,sans-serif",marginBottom:4}}>{d.label}</div>
-            <div style={{fontSize:26,fontWeight:800,color:d.color,lineHeight:1}}>{d.value}</div>
-            <div style={{fontSize:11,color:"#546e7a",fontFamily:"Barlow,sans-serif"}}>{pct(d.value,llamados.length)}</div>
-          </div>
-        ))}
-      </div>
+      {/* Tarjetas resumen */}
+      {chartData.length>0&&(
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10}}>
+          {chartData.map((d,i)=>(
+            <div key={i} style={{background:"#0f1623",border:`1px solid ${d.color}33`,borderRadius:10,padding:"12px 14px",textAlign:"center"}}>
+              <div style={{fontSize:11,color:d.color,fontWeight:700,fontFamily:"Barlow,sans-serif",marginBottom:4,wordBreak:"break-word"}}>{d.label}</div>
+              <div style={{fontSize:26,fontWeight:800,color:d.color,lineHeight:1}}>{d.value}</div>
+              <div style={{fontSize:11,color:"#546e7a",fontFamily:"Barlow,sans-serif"}}>{pct(d.value,llamadosFiltrados.length)}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
