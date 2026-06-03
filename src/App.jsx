@@ -620,6 +620,37 @@ export default function App() {
   const globalSem     = getSemaforo(efGlobal);
   const veredictos    = getVeredictos(form.categoria);
 
+  /* ── Importar JSON local ── */
+  const importarJSON = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.config)   {
+          setConfig(data.config);
+          setForm(makeForm(data.config.arbitros, data.config.equipo1));
+          setFisico(makeFisico(data.config.arbitros));
+        }
+        if (data.llamados) setLlamados(data.llamados);
+        if (data.fisico)   setFisico(data.fisico);
+        // Guardar en OneDrive
+        syncData(
+          data.llamados || [],
+          data.config   || config,
+          data.fisico   || fisico
+        );
+        alert(`✅ Importado correctamente:\n${data.llamados?.length || 0} registros cargados.`);
+      } catch {
+        alert("❌ El archivo no es un JSON válido de Análisis Arbitral.");
+      }
+    };
+    reader.readAsText(file);
+    // Limpiar input para permitir reimportar el mismo archivo
+    e.target.value = "";
+  };
+
   /* ── Exportar JSON local ── */
   const exportarJSON = () => {
     const data = { config, llamados, fisico };
@@ -724,6 +755,10 @@ export default function App() {
               <button className="btn btn-ghost" style={{fontSize:13,padding:"7px 16px"}} onClick={()=>{setTmpCfg(config);setEditCfg(true);}}>⚙️ Configurar</button>
               <button className="btn btn-green btn-sm" onClick={()=>setModalFinalizar(true)}>🏁 Finalizar Partido</button>
               <button className="btn btn-warn btn-sm" onClick={exportarJSON}>💾 Exportar JSON</button>
+              <label className="btn btn-ghost btn-sm" style={{cursor:"pointer"}}>
+                📂 Importar JSON
+                <input type="file" accept=".json" onChange={importarJSON} style={{display:"none"}}/>
+              </label>
               <button className="btn btn-ghost btn-sm" onClick={()=>setModalNuevo(true)}>🆕 Nuevo Juego</button>
               <button className="btn btn-del btn-sm" onClick={()=>{localStorage.removeItem("msft_token");localStorage.removeItem("msft_expiry");window.location.reload();}}>Cerrar sesión</button>
             </div>
