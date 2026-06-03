@@ -3,11 +3,18 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 /* ══════════════════════════════════════════════════════════
    CONSTANTES FIBA
 ═══════════════════════════════════════════════════════════ */
-const MSAL_CLIENT_ID = "48c17191-0f37-422c-8c54-dcdfe41142e2";
-const MSAL_REDIRECT  = "https://basketball-swart-nine.vercel.app/";
-const ONEDRIVE_FILE  = "basketball_arbitral_data.json";
-const MSAL_SCOPES    = ["Files.ReadWrite","User.Read"];
-const MSAL_AUTH_URL  = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+const MSAL_CLIENT_ID   = "48c17191-0f37-422c-8c54-dcdfe41142e2";
+const MSAL_REDIRECT    = "https://basketball-swart-nine.vercel.app/";
+const ONEDRIVE_CURRENT = "basketball_arbitral_data.json";
+const MSAL_SCOPES      = ["Files.ReadWrite","User.Read"];
+const MSAL_AUTH_URL    = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+
+const makeFileName = (config) => {
+  const eq1   = (config.equipo1||"EquipoA").replace(/\s+/g,"");
+  const eq2   = (config.equipo2||"EquipoB").replace(/\s+/g,"");
+  const fecha = (config.fecha||"").replace(/-/g,"");
+  return `Evaluacion_Arbitral_${eq1}_vs_${eq2}_${fecha}.json`;
+};
 
 const CATEGORIAS = {
   falta:    { label:"Falta",            color:"#e91e63", icon:"🚨" },
@@ -132,14 +139,14 @@ function getStoredToken() {
 /* ── OneDrive ── */
 async function saveToOneDrive(token, data) {
   const res = await fetch(
-    `https://graph.microsoft.com/v1.0/me/drive/root:/${ONEDRIVE_FILE}:/content`,
+    `https://graph.microsoft.com/v1.0/me/drive/root:/${fileName}:/content`,
     { method:"PUT", headers:{ Authorization:`Bearer ${token}`, "Content-Type":"application/json" }, body:JSON.stringify(data,null,2) }
   );
   if (!res.ok) throw new Error(`OneDrive save error: ${res.status}`);
 }
 async function loadFromOneDrive(token) {
   const res = await fetch(
-    `https://graph.microsoft.com/v1.0/me/drive/root:/${ONEDRIVE_FILE}:/content`,
+    `https://graph.microsoft.com/v1.0/me/drive/root:/${fileName}:/content`,
     { headers:{ Authorization:`Bearer ${token}` } }
   );
   if (res.status===404) return null;
@@ -480,10 +487,14 @@ function VistaGraficos({ llamados, config }) {
    APP PRINCIPAL
 ═══════════════════════════════════════════════════════════ */
 export default function App() {
-  const [token,     setToken]     = useState(()=>getStoredToken());
-  const [userInfo,  setUserInfo]  = useState(null);
-  const [syncState, setSyncState] = useState("idle");
-  const [lastSync,  setLastSync]  = useState(null);
+  const [token,      setToken]     = useState(()=>getStoredToken());
+  const [userInfo,   setUserInfo]  = useState(null);
+  const [syncState,  setSyncState] = useState("idle");
+  const [lastSync,   setLastSync]  = useState(null);
+  const [dataLoaded,    setDataLoaded]   = useState(false);
+  const [modalFinalizar,setModalFinalizar]= useState(false);
+  const [modalNuevo,    setModalNuevo]    = useState(false);
+  const [guardandoFinal,setGuardandoFinal]= useState(false);
 
   const [config,   setConfig]   = useState(DEFAULT_CONFIG);
   const [editCfg,  setEditCfg]  = useState(false);
@@ -501,23 +512,25 @@ export default function App() {
     if(!token) return;
     getUserInfo(token).then(u=>u&&setUserInfo(u));
     loadFromOneDrive(token).then(data=>{
-      if(!data) return;
-      if(data.config)  { setConfig(data.config); setForm(makeForm(data.config.arbitros,data.config.equipo1)); setFisico(makeFisico(data.config.arbitros)); }
-      if(data.llamados) setLlamados(data.llamados);
-      if(data.fisico)   setFisico(data.fisico);
-      setLastSync(new Date());
-    }).catch(()=>{});
+      if(data){
+        if(data.config)  { setConfig(data.config); setForm(makeForm(data.config.arbitros,data.config.equipo1)); setFisico(makeFisico(data.config.arbitros)); }
+        if(data.llamados) setLlamados(data.llamados);
+        if(data.fisico)   setFisico(data.fisico);
+        setLastSync(new Date());
+      }
+      setDataLoaded(true); // habilitar guardado solo despues de cargar
+    }).catch(()=>{ setDataLoaded(true); }); // si falla carga, igual habilitar
   },[token]);
 
   const syncData = useCallback(async(nl,nc,nf)=>{
-    if(!token) return;
+    if(!token || !dataLoaded) return;
     setSyncState("saving");
     try {
-      await saveToOneDrive(token,{config:nc,llamados:nl,fisico:nf});
+      await saveToOneDrive(token,{config:nc,llamados:nl,fisico:nf},ONEDRIVE_CURRENT);
       setSyncState("ok"); setLastSync(new Date());
       setTimeout(()=>setSyncState("idle"),2000);
     } catch { setSyncState("error"); }
-  },[token]);
+  },[token,dataLoaded]);
 
   const fv = (k,v) => setForm(f=>({...f,[k]:v}));
   const arbInfo = id => config.arbitros.find(a=>a.id===id);
@@ -607,6 +620,55 @@ export default function App() {
   const globalSem     = getSemaforo(efGlobal);
   const veredictos    = getVeredictos(form.categoria);
 
+  /* ── Exportar JSON local ── */
+  const exportarJSON = () => {
+    const data = { config, llamados, fisico };
+    const blob = new Blob([JSON.stringify(data,null,2)], { type:"application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url;
+    a.download = makeFileName(config);
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /* ── Finalizar partido ── */
+  const finalizarPartido = async () => {
+    setGuardandoFinal(true);
+    const data     = { config, llamados, fisico };
+    const fileName = makeFileName(config);
+    try {
+      await saveToOneDrive(token, data, fileName);
+      await saveToOneDrive(token, data, ONEDRIVE_CURRENT);
+      setModalFinalizar(false);
+      alert(`✅ Partido guardado como:\n${fileName}`);
+    } catch(e) {
+      alert("❌ Error al guardar en OneDrive. Usa Exportar JSON como respaldo.");
+    }
+    setGuardandoFinal(false);
+  };
+
+  /* ── Nuevo juego ── */
+  const nuevoJuego = () => {
+    const empty = {
+      liga:"", equipo1:"", equipo2:"", fecha:"", notaGrupal:"",
+      arbitros:[
+        { id:makeId(), nombre:"", rol:"Crew Chief", foto:"" },
+        { id:makeId(), nombre:"", rol:"Umpire 1",   foto:"" },
+        { id:makeId(), nombre:"", rol:"Umpire 2",   foto:"" },
+      ],
+    };
+    setConfig(empty);
+    setLlamados([]);
+    setFisico(makeFisico(empty.arbitros));
+    setForm(makeForm(empty.arbitros,""));
+    setEditId(null);
+    setVista("registro");
+    setModalNuevo(false);
+    // Limpiar archivo actual en OneDrive
+    saveToOneDrive(token, { config:empty, llamados:[], fisico:makeFisico(empty.arbitros) }, ONEDRIVE_CURRENT).catch(()=>{});
+  };
+
   /* ── LOGIN ── */
   if(!token) return (
     <div style={{minHeight:"100vh",background:"#090d18",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
@@ -660,6 +722,9 @@ export default function App() {
             <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
               {userInfo&&<span style={{fontSize:12,color:"#546e7a",fontFamily:"Barlow,sans-serif"}}>👤 {userInfo.displayName||userInfo.userPrincipalName}</span>}
               <button className="btn btn-ghost" style={{fontSize:13,padding:"7px 16px"}} onClick={()=>{setTmpCfg(config);setEditCfg(true);}}>⚙️ Configurar</button>
+              <button className="btn btn-green btn-sm" onClick={()=>setModalFinalizar(true)}>🏁 Finalizar Partido</button>
+              <button className="btn btn-warn btn-sm" onClick={exportarJSON}>💾 Exportar JSON</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setModalNuevo(true)}>🆕 Nuevo Juego</button>
               <button className="btn btn-del btn-sm" onClick={()=>{localStorage.removeItem("msft_token");localStorage.removeItem("msft_expiry");window.location.reload();}}>Cerrar sesión</button>
             </div>
           </div>
@@ -1273,6 +1338,54 @@ export default function App() {
         {vista==="graficos"&&<VistaGraficos llamados={llamados} config={config}/>}
 
       </div>
+
+      {/* MODAL FINALIZAR PARTIDO */}
+      {modalFinalizar&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div className="card" style={{width:"100%",maxWidth:480,padding:32,textAlign:"center"}}>
+            <div style={{fontSize:48,marginBottom:12}}>🏁</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#fff",letterSpacing:2,fontFamily:"'Barlow Condensed',sans-serif",marginBottom:8}}>FINALIZAR PARTIDO</div>
+            <div style={{fontSize:13,color:"#546e7a",fontFamily:"Barlow,sans-serif",lineHeight:1.7,marginBottom:20}}>
+              Se guardará el partido en OneDrive con el nombre:<br/>
+              <span style={{color:"#00e676",fontWeight:700,fontFamily:"monospace",fontSize:12,wordBreak:"break-all"}}>{makeFileName(config)}</span>
+            </div>
+            <div style={{background:"#090d18",borderRadius:8,padding:"12px 16px",marginBottom:20,fontSize:13,color:"#b0bec5",fontFamily:"Barlow,sans-serif"}}>
+              <div>📅 {config.fecha}</div>
+              <div>🏀 {config.equipo1} vs {config.equipo2}</div>
+              <div>📋 {llamados.length} llamados registrados</div>
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+              <button className="btn btn-green" onClick={finalizarPartido} disabled={guardandoFinal}>
+                {guardandoFinal?"⏳ Guardando...":"✅ GUARDAR PARTIDO"}
+              </button>
+              <button className="btn btn-ghost" onClick={()=>setModalFinalizar(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL NUEVO JUEGO */}
+      {modalNuevo&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div className="card" style={{width:"100%",maxWidth:480,padding:32,textAlign:"center"}}>
+            <div style={{fontSize:48,marginBottom:12}}>🆕</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#fff",letterSpacing:2,fontFamily:"'Barlow Condensed',sans-serif",marginBottom:8}}>NUEVO JUEGO</div>
+            <div style={{fontSize:13,color:"#ff9100",fontFamily:"Barlow,sans-serif",lineHeight:1.7,marginBottom:20}}>
+              ⚠️ Esta acción borrará <strong>toda</strong> la información del partido actual:<br/>
+              equipos, árbitros, llamados, estado físico y nota grupal.
+            </div>
+            <div style={{background:"#090d18",borderRadius:8,padding:"12px 16px",marginBottom:20,fontSize:13,color:"#b0bec5",fontFamily:"Barlow,sans-serif"}}>
+              <div>🏀 {config.equipo1} vs {config.equipo2}</div>
+              <div>📋 {llamados.length} llamados se perderán</div>
+              <div style={{color:"#ff5252",marginTop:6}}>¿Finalizaste y guardaste el partido primero?</div>
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+              <button className="btn btn-red" onClick={nuevoJuego}>🗑 SÍ, INICIAR NUEVO JUEGO</button>
+              <button className="btn btn-ghost" onClick={()=>setModalNuevo(false)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{borderTop:"1px solid #1d2840",padding:"14px 28px",textAlign:"center",color:"#263238",fontSize:11,fontFamily:"Barlow,sans-serif"}}>
         Herramienta de Análisis Arbitral · Liga Señal Colombia de Baloncesto · Uso interno
